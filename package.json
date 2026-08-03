@@ -1,0 +1,14 @@
+{
+  "name": "openai-image-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OpenAI 이미지 생성(GPT Image) API를 감싼 MCP 서버 - 포니링크 IT사업본부",
+  "main": "api/mcp.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "smoketest": "node scripts/smoketest.js"
+  },
+  "dependencies": {}
+}
