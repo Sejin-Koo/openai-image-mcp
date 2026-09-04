@@ -18,7 +18,45 @@ function keyLabel(k) {
   const m = String(k).match(/^plk_([A-Za-z0-9]+)_/);
   return m ? m[1] : `${String(k).slice(0, 8)}…`;
 }
-const PROTOCOL_VERSION = "2025-06-18";
+// ── MCP 프로토콜 버전 협상 ──────────────────────────────────────────────────
+// 규격 근거 두 가지.
+//  (1) Lifecycle "Version Negotiation": 서버는 요청받은 버전을 지원하면 같은 값으로,
+//      지원하지 않으면 "자기가 지원하는" 다른 버전으로 응답해야 한다(MUST).
+//  (2) Transports "Protocol Version Header": MCP-Protocol-Version 헤더가 미지원
+//      버전이면 400 Bad Request 로 응답해야 한다(MUST). 이 400은 신형(2026-07-28)
+//      클라이언트가 HTTP에서 구형 서버를 판별해 폴백하는 유일한 신호이기도 하므로,
+//      200 으로 통과시키면 신형 클라이언트가 이 서버를 신형으로 오인한다.
+// 목록은 @modelcontextprotocol/sdk 의 SUPPORTED_PROTOCOL_VERSIONS 와 동일하게 맞춰,
+// SDK 기반 서버들과 협상 결과가 갈리지 않도록 한다.
+const SUPPORTED_PROTOCOL_VERSIONS = [
+  "2025-11-25",
+  "2025-06-18",
+  "2025-03-26",
+  "2024-11-05",
+  "2024-10-07",
+];
+const LATEST_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[0];
+
+function negotiateProtocolVersion(requested) {
+  return SUPPORTED_PROTOCOL_VERSIONS.includes(requested)
+    ? requested
+    : LATEST_PROTOCOL_VERSION;
+}
+
+// 헤더가 없으면 통과한다(규격상 서버는 2025-03-26 으로 간주). 값이 있으면 대조한다.
+function protocolVersionHeaderError(req) {
+  const raw = req.headers && req.headers["mcp-protocol-version"];
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  if (!v || SUPPORTED_PROTOCOL_VERSIONS.includes(v)) return null;
+  return {
+    jsonrpc: "2.0",
+    error: {
+      code: -32000,
+      message: `Bad Request: Unsupported protocol version: ${v} (supported versions: ${SUPPORTED_PROTOCOL_VERSIONS.join(", ")})`,
+    },
+    id: null,
+  };
+}
 
 const TOOLS = [
   {
@@ -77,12 +115,11 @@ async function handleRpc(payload) {
   switch (method) {
     case "initialize":
       return jsonRpcResult(id, {
-        protocolVersion: PROTOCOL_VERSION,
+        protocolVersion: negotiateProtocolVersion(params && params.protocolVersion),
         capabilities: { tools: {} },
         serverInfo: SERVER_INFO,
       });
 
-    case "notifications/initialized":
     case "ping":
       return jsonRpcResult(id, {});
 
@@ -167,6 +204,12 @@ module.exports = async (req, res) => {
     }
   }
 
+  const pvError = protocolVersionHeaderError(req);
+  if (pvError) {
+    res.status(400).json(pvError);
+    return;
+  }
+
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST, OPTIONS");
     res.status(405).json({ error: "이 엔드포인트는 POST만 지원합니다 (stateless JSON-RPC)." });
@@ -181,6 +224,12 @@ module.exports = async (req, res) => {
       res.status(400).json({ error: "잘못된 JSON 요청 본문입니다." });
       return;
     }
+  }
+
+  // 알림(notification)에는 응답 본문이 없어야 한다 — 규격상 202 Accepted.
+  if (!Array.isArray(body) && typeof (body && body.method) === "string" && body.method.startsWith("notifications/")) {
+    res.status(202).end();
+    return;
   }
 
   try {
